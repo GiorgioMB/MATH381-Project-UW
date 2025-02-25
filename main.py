@@ -177,7 +177,7 @@ plt.show()
 
 
 
-# %%
+#%%
 def get_endpoint_coords(route, G):
     """
     Returns the coordinates of the start and end nodes of the route.
@@ -287,7 +287,7 @@ def merge_two_routes_improved(route1, route2, G, forbidden_penalty=100.0,
 
     return best_merge, best_total_cost
 
-def reduce_route_count(routes, G, target_count=150, dist_threshold=110, max_iterations=2000,
+def reduce_route_count(routes, G, target_count=300, dist_threshold=110, max_iterations=2000,
                                 forbidden_penalty=100.0, merge_length_factor=0.1, geometric_factor=1.0):
     """
     Iteratively merge pairs of routes until the total number is less than or equal to target_count.
@@ -407,8 +407,8 @@ print("Initial number of routes:", len(initial_bus_routes))
 initial_bus_routes = merge_routes_simple(initial_bus_routes)
 print("Routes after simple merge:", len(initial_bus_routes))
 
-final_bus_routes = reduce_route_count(initial_bus_routes, augmented_network, target_count=150)
-final_bus_routes = reduce_route_count(final_bus_routes, augmented_network, target_count=150, dist_threshold=500)
+final_bus_routes = reduce_route_count(initial_bus_routes, augmented_network, target_count=300)
+final_bus_routes = reduce_route_count(final_bus_routes, augmented_network, target_count=300, dist_threshold=500)
 print("Final number of routes:", len(final_bus_routes))
 
 fig, ax = plt.subplots(figsize=(12, 12))
@@ -429,7 +429,10 @@ for idx, route in enumerate(final_bus_routes):
 ax.set_title("Final Bus Routes")
 ax.legend()
 plt.show()
-# %%
+
+
+
+#%%
 edge_traces = []
 for u, v, data in augmented_network.edges(data=True):
     geom = data.get('geometry')
@@ -511,6 +514,7 @@ fig.update_layout(
 
 fig.write_html("bus_routes.html")
 fig.show()
+
 
 
 #%%
@@ -600,7 +604,9 @@ global_stops, route_stop_indices = generate_global_stop_candidates(routes_coords
                                                                     extra_stop_gap=500,  
                                                                     merge_tolerance=20)
 
-# %%
+
+
+#%%
 stop_routes = {}
 for route_idx, stop_idxs in enumerate(route_stop_indices):
     for stop_idx in stop_idxs:
@@ -753,4 +759,3 @@ fig.update_layout(
 )
 fig.write_html("bus_routes_with_stops.html")
 fig.show()
-# %%
