@@ -6,6 +6,8 @@ import numpy as np
 from shapely.geometry import Point, LineString, MultiLineString
 from matplotlib import cm
 from matplotlib.colors import Normalize
+import math
+import plotly.graph_objects as go
 
 data_path = "SDOT_data.geojson" 
 roads = gpd.read_file(data_path)
@@ -176,14 +178,6 @@ plt.show()
 
 
 # %%
-import geopandas as gpd
-import networkx as nx
-import matplotlib.pyplot as plt
-import numpy as np
-from shapely.geometry import Point, LineString
-from matplotlib import cm
-import math
-
 def get_endpoint_coords(route, G):
     """
     Returns the coordinates of the start and end nodes of the route.
@@ -436,11 +430,6 @@ ax.set_title("Final Bus Routes")
 ax.legend()
 plt.show()
 # %%
-
-import plotly.graph_objects as go
-from shapely.geometry import LineString, Point
-import matplotlib.cm as cm
-
 edge_traces = []
 for u, v, data in augmented_network.edges(data=True):
     geom = data.get('geometry')
@@ -525,8 +514,6 @@ fig.show()
 
 
 #%%
-import math
-
 def euclidean_distance(p1, p2):
     """Compute Euclidean distance between two 2D points (tuples)."""
     return math.hypot(p1[0]-p2[0], p1[1]-p2[1])
