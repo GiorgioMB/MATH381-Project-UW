@@ -225,7 +225,7 @@ def compute_geometric_penalty(route, close_threshold=10):
     return openness_penalty + turning_penalty
 
 def merge_two_routes_improved(route1, route2, G, forbidden_penalty=100.0,
-                              merge_length_factor=0.1, geometric_factor=1.0):
+                              merge_length_factor=30, geometric_factor=1.0):
     """
     Attempt to merge two routes with additional penalties:
     
@@ -288,7 +288,7 @@ def merge_two_routes_improved(route1, route2, G, forbidden_penalty=100.0,
     return best_merge, best_total_cost
 
 def reduce_route_count(routes, G, target_count=300, dist_threshold=110, max_iterations=2000,
-                                forbidden_penalty=100.0, merge_length_factor=0.1, geometric_factor=1.0):
+                                forbidden_penalty=100.0, merge_length_factor=30, geometric_factor=1.0):
     """
     Iteratively merge pairs of routes until the total number is less than or equal to target_count.
     Uses additional penalties to favor merging smaller routes and routes that can be interpreted
