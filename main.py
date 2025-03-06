@@ -1,4 +1,4 @@
-#%%
+#%% Import necessary libraries
 import geopandas as gpd
 import networkx as nx
 import matplotlib.pyplot as plt
@@ -9,25 +9,32 @@ from matplotlib.colors import Normalize
 import math
 import plotly.graph_objects as go
 
+# Load road network data
 data_path = "SDOT_data.geojson" 
 roads = gpd.read_file(data_path)
 
+# Convert to projected coordinate system if necessary (for accurate distance calculations)
 if roads.crs.is_geographic:
     roads = roads.to_crs(epsg=26910)  
 
+# Ensure 'ADT' column exists, otherwise raise an error
 if 'ADT' not in roads.columns:
     raise ValueError("Dataset is missing the ADT column required for busyness.")
 
+# Assign busyness values based on ADT
 roads['busyness'] = roads['ADT']
 roads['frequency'] = 1.0
-roads['busyness_norm'] = (roads['busyness'] - roads['busyness'].min()) / (
-    roads['busyness'].max() - roads['busyness'].min() + 1e-6)
 
+# Normalize busyness values for comparison
+roads['busyness_norm'] = (roads['busyness'] - roads['busyness'].min()) / (roads['busyness'].max() - roads['busyness'].min() + 1e-6)
+
+# Use existing road lengths or compute from geometry
 if 'Shape_Leng' in roads.columns:
     roads['length'] = roads['Shape_Leng']
 else:
     roads['length'] = roads.geometry.length
 
+# Compute average road length for reference
 avg_length = roads['length'].mean()
 
 
@@ -47,36 +54,43 @@ def vertex_key(coord, precision=3):
     """
     return (round(coord[0], precision), round(coord[1], precision))
 
-
+# Create an empty graph
 G = nx.Graph()
 
+# Build graph from road network
 for idx, row in roads.iterrows():
     geom = row.geometry
     for line in extract_lines(geom):
         start = vertex_key(line.coords[0])
         end = vertex_key(line.coords[-1])
         
+        # Edge attributes: length, busyness, and geometry
         attr = {
             'length': line.length,
             'busyness_norm': row['busyness_norm'],
             'geometry': line
         }
         
+        # Add edge to graph, incrementing count if it already exists
         if G.has_edge(start, end):
             G[start][end]['count'] = G[start][end].get('count', 1) + 1
         else:
             G.add_edge(start, end, **attr)
 
-
+# Compute hub scores for each node (sum of incident edge busyness)
 hub_scores = {}
 for node in G.nodes():
     incident = G.edges(node, data=True)
     total = sum(data.get('busyness_norm', 0) for _, _, data in incident)
     hub_scores[node] = total
 
+# Normalize hub scores
 max_hub = max(hub_scores.values()) if hub_scores else 1.0
 for node in hub_scores:
     hub_scores[node] /= (max_hub + 1e-6)
+
+
+# Assign hub scores as node attributes
 nx.set_node_attributes(G, hub_scores, 'hub_score')
 
 
@@ -407,8 +421,8 @@ print("Initial number of routes:", len(initial_bus_routes))
 initial_bus_routes = merge_routes_simple(initial_bus_routes)
 print("Routes after simple merge:", len(initial_bus_routes))
 
-final_bus_routes = reduce_route_count(initial_bus_routes, augmented_network, target_count=300)
-final_bus_routes = reduce_route_count(final_bus_routes, augmented_network, target_count=300, dist_threshold=500)
+final_bus_routes = reduce_route_count(initial_bus_routes, augmented_network, target_count=650)
+final_bus_routes = reduce_route_count(final_bus_routes, augmented_network, target_count=650, dist_threshold=500)
 print("Final number of routes:", len(final_bus_routes))
 
 fig, ax = plt.subplots(figsize=(12, 12))
