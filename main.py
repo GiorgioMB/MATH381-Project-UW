@@ -760,10 +760,374 @@ def plot_final_routes(final_bus_routes, augmented_network):
     fig.show()
 
 
+def main():
+    data_path = "SDOT_data.geojson"
+    roads = gpd.read_file(data_path)
+
+    if roads.crs.is_geographic:
+        roads = roads.to_crs(epsg=26910)
+
+    if 'ADT' not in roads.columns:
+        raise ValueError("Dataset is missing the ADT column required for busyness.")
+
+    roads['busyness'] = roads['ADT']
+    roads['frequency'] = 1.0
+    roads['busyness_norm'] = (roads['busyness'] - roads['busyness'].min()) / (
+            roads['busyness'].max() - roads['busyness'].min() + 1e-6)
+
+    if 'Shape_Leng' in roads.columns:
+        roads['length'] = roads['Shape_Leng']
+    else:
+        roads['length'] = roads.geometry.length
+
+    avg_length = roads['length'].mean()
+    G = nx.Graph()
+
+    for idx, row in roads.iterrows():
+        geom = row.geometry
+        for line in extract_lines(geom):
+            start = vertex_key(line.coords[0])
+            end = vertex_key(line.coords[-1])
+
+            attr = {
+                'length': line.length,
+                'busyness_norm': row['busyness_norm'],
+                'geometry': line
+            }
+
+            if G.has_edge(start, end):
+                G[start][end]['count'] = G[start][end].get('count', 1) + 1
+            else:
+                G.add_edge(start, end, **attr)
+
+    hub_scores = {}
+    for node in G.nodes():
+        incident = G.edges(node, data=True)
+        total = sum(data.get('busyness_norm', 0) for _, _, data in incident)
+        hub_scores[node] = total
+
+    max_hub = max(hub_scores.values()) if hub_scores else 1.0
+    for node in hub_scores:
+        hub_scores[node] /= (max_hub + 1e-6)
+    nx.set_node_attributes(G, hub_scores, 'hub_score')
+    for u, v, data in G.edges(data=True):
+        start_hub = hub_scores.get(u, 0)
+        end_hub = hub_scores.get(v, 0)
+        data['weight'] = compute_edge_weight(data, start_hub, end_hub, avg_length,
+                                             lambda_m=1.0, lambda_c=1.0, beta=1.0,
+                                             base_freq=5, scale=10, gamma=0.05)
+
+    mst = nx.minimum_spanning_tree(G, weight='weight')
+    for u, v, data in mst.edges(data=True):
+        start_hub = hub_scores.get(u, 0)
+        end_hub = hub_scores.get(v, 0)
+        freq = assign_frequency(data, start_hub, end_hub)
+        data['service_frequency'] = freq
+        data['avg_wait_time'] = 60.0 / freq
+
+    redundancy_threshold = 0.9
+    redundant_edges = []
+    for u, v, data in G.edges(data=True):
+        if mst.has_edge(u, v):
+            continue
+        if hub_scores.get(u, 0) > redundancy_threshold and hub_scores.get(v, 0) > redundancy_threshold:
+            redundant_edges.append((u, v, data))
+
+    augmented_network = mst.copy()
+    for u, v, data in redundant_edges:
+        start_hub = hub_scores.get(u, 0)
+        end_hub = hub_scores.get(v, 0)
+        freq = assign_frequency(data, start_hub, end_hub)
+        data['service_frequency'] = freq
+        data['avg_wait_time'] = 60.0 / freq
+        augmented_network.add_edge(u, v, **data)
+
+    aug_edges = []
+    wait_times = []
+    for u, v, data in augmented_network.edges(data=True):
+        geom = data.get('geometry')
+        if not isinstance(geom, LineString):
+            geom = LineString([Point(u), Point(v)])
+        aug_edges.append(geom)
+        wait_times.append(data.get('avg_wait_time', 60))
+
+    aug_gdf = gpd.GeoDataFrame(geometry=aug_edges, crs=roads.crs)
+
+    norm = Normalize(vmin=min(wait_times), vmax=max(wait_times))
+    cmap = cm.get_cmap('coolwarm')
+
+    fig, ax = plt.subplots(figsize=(12, 12))
+    roads.plot(ax=ax, color="black", linewidth=1, label="Original Road Network")
+
+    for geom, wt in zip(aug_edges, wait_times):
+        ax.plot(*geom.xy, color=cmap(norm(wt)), linewidth=1.2)
+
+    sm = cm.ScalarMappable(cmap=cmap, norm=norm)
+    sm.set_array([])
+    cbar = plt.colorbar(sm, ax=ax, pad=0.01)
+    cbar.set_label("Average Wait Time (min)")
+
+    ax.set_title("Optimized Transit Network")
+    ax.legend()
+    plt.show()
+
+    initial_bus_routes = generate_bus_routes(augmented_network)
+    print("Initial number of routes:", len(initial_bus_routes))
+
+    initial_bus_routes = merge_routes_simple(initial_bus_routes)
+    print("Routes after simple merge:", len(initial_bus_routes))
+
+    final_bus_routes = reduce_route_count(initial_bus_routes, augmented_network, target_count=300)
+    final_bus_routes = reduce_route_count(final_bus_routes, augmented_network, target_count=300, dist_threshold=500)
+    print("Final number of routes:", len(final_bus_routes))
+
+    fig, ax = plt.subplots(figsize=(12, 12))
+    for u, v, data in augmented_network.edges(data=True):
+        geom = data.get('geometry')
+        if not isinstance(geom, LineString):
+            geom = LineString([Point(u), Point(v)])
+        x, y = geom.xy
+        ax.plot(x, y, color="gray", linewidth=1, zorder=1)
+
+    colors = cm.get_cmap('tab20', len(final_bus_routes))
+    for idx, route in enumerate(final_bus_routes):
+        pts = [Point(n) if not isinstance(n, Point) else n for n in route]
+        line = LineString(pts)
+        x, y = line.xy
+        ax.plot(x, y, color=colors(idx), linewidth=3, label=f"Route {idx + 1}", zorder=2)
+
+    ax.set_title("Final Bus Routes")
+    ax.legend()
+    plt.show()
+
+    # %%
+    edge_traces = []
+    for u, v, data in augmented_network.edges(data=True):
+        geom = data.get('geometry')
+        if not isinstance(geom, LineString):
+            geom = LineString([Point(u), Point(v)])
+        x, y = geom.xy
+        x = list(x)
+        y = list(y)
+        edge_traces.append(
+            go.Scatter(
+                x=x,
+                y=y,
+                mode='lines',
+                line=dict(color='gray', width=1),
+                hoverinfo='none'
+            )
+        )
+
+    cmap = cm.get_cmap('tab20', len(final_bus_routes))
+
+    route_traces = []
+    for idx, route in enumerate(final_bus_routes):
+        pts = [Point(n) if not isinstance(n, Point) else n for n in route]
+        line = LineString(pts)
+        x, y = line.xy
+        x = list(x)
+        y = list(y)
+        route_traces.append(
+            go.Scatter(
+                x=x,
+                y=y,
+                mode='lines',
+                line=dict(color=rgba_to_rgb_str(cmap(idx)), width=3),
+                name=f"Route {idx + 1}",
+                visible=False
+            )
+        )
+
+    all_traces = edge_traces + route_traces
+    fig = go.Figure(data=all_traces)
+    buttons = []
+
+    visible_all = [True] * len(edge_traces) + [True] * len(route_traces)
+    buttons.append(dict(
+        label="All Routes",
+        method="update",
+        args=[{"visible": visible_all},
+              {"title": "Final Bus Routes - All Routes"}]
+    ))
+
+    for i in range(len(final_bus_routes)):
+        visible = [True] * len(edge_traces) + [False] * len(route_traces)
+        visible[len(edge_traces) + i] = True
+        buttons.append(dict(
+            label=f"Route {i + 1}",
+            method="update",
+            args=[{"visible": visible},
+                  {"title": f"Final Bus Routes - Route {i + 1}"}]
+        ))
+
+    fig.update_layout(
+        title="Final Bus Routes",
+        updatemenus=[dict(
+            active=0,
+            buttons=buttons,
+            x=1.1,
+            y=1
+        )],
+        xaxis_title="X Coordinate",
+        yaxis_title="Y Coordinate",
+        template="plotly_white"
+    )
+
+    fig.write_html("bus_routes.html")
+    fig.show()
+
+    routes_coords = []
+    for route in final_bus_routes:
+        routes_coords.append([to_coord(pt) for pt in route])
+
+    global_stops, route_stop_indices = generate_global_stop_candidates(routes_coords,
+                                                                       extra_stop_gap=500,
+                                                                       merge_tolerance=20)
+
+    # %%
+    stop_routes = {}
+    for route_idx, stop_idxs in enumerate(route_stop_indices):
+        for stop_idx in stop_idxs:
+            stop_routes.setdefault(stop_idx, set()).add(route_idx + 1)
+
+    stops_all_x = [pt[0] for pt in global_stops]
+    stops_all_y = [pt[1] for pt in global_stops]
+    stops_all_text = [
+        f"Stop {idx + 1}<br>Routes: {', '.join(map(str, sorted(stop_routes.get(idx, []))))}"
+        for idx in range(len(global_stops))
+    ]
+
+    stops_by_route = []
+    for route_num in range(1, len(final_bus_routes) + 1):
+        xs = []
+        ys = []
+        texts = []
+        for idx, pt in enumerate(global_stops):
+            if route_num in stop_routes.get(idx, []):
+                xs.append(pt[0])
+                ys.append(pt[1])
+                texts.append(f"Stop {idx + 1}<br>Routes: {', '.join(map(str, sorted(stop_routes.get(idx, []))))}")
+        stops_by_route.append((xs, ys, texts))
+
+    edge_traces = []
+    for u, v, data in augmented_network.edges(data=True):
+        geom = data.get('geometry')
+        if not isinstance(geom, LineString):
+            geom = LineString([Point(u), Point(v)])
+        x, y = geom.xy
+        edge_traces.append(
+            go.Scatter(
+                x=list(x),
+                y=list(y),
+                mode='lines',
+                line=dict(color='gray', width=1),
+                hoverinfo='none'
+            )
+        )
+
+    cmap = cm.get_cmap('tab20', len(final_bus_routes))
+    route_traces = []
+    for idx, route in enumerate(final_bus_routes):
+        pts = [Point(n) if not isinstance(n, Point) else n for n in route]
+        line = LineString(pts)
+        x, y = line.xy
+        route_traces.append(
+            go.Scatter(
+                x=list(x),
+                y=list(y),
+                mode='lines',
+                line=dict(color=rgba_to_rgb_str(cmap(idx)), width=3),
+                name=f"Route {idx + 1}",
+                visible=False
+            )
+        )
+
+    stops_all_trace = go.Scatter(
+        x=stops_all_x,
+        y=stops_all_y,
+        mode='markers',
+        marker=dict(size=8, color='black'),
+        name="Stops (All Routes)",
+        text=stops_all_text,
+        hoverinfo='text',
+        visible=False
+    )
+
+    stops_traces = []
+    for route_idx, (xs, ys, texts) in enumerate(stops_by_route):
+        stops_traces.append(
+            go.Scatter(
+                x=xs,
+                y=ys,
+                mode='markers',
+                marker=dict(size=10, color='black'),
+                name=f"Stops (Route {route_idx + 1})",
+                text=texts,
+                hoverinfo='text',
+                visible=False
+            )
+        )
+
+    fig = go.Figure(
+        data=edge_traces + route_traces + [stops_all_trace] + stops_traces
+    )
+
+    n_edges = len(edge_traces)
+    n_routes = len(route_traces)
+    n_stops_total = 1 + len(stops_traces)
+    buttons = []
+
+    visible_all = (
+            [True] * n_edges +
+            [True] * n_routes +
+            ([True] + [False] * (n_stops_total - 1))
+    )
+    buttons.append(dict(
+        label="All Routes",
+        method="update",
+        args=[{"visible": visible_all},
+              {"title": "Final Bus Routes - All Routes"}]
+    ))
+
+    for i in range(len(final_bus_routes)):
+        route_vis = [False] * n_routes
+        route_vis[i] = True
+        stops_vis = [False] * n_stops_total
+        stops_vis[i + 1] = True
+        visible = (
+                [True] * n_edges +
+                route_vis +
+                stops_vis
+        )
+        buttons.append(dict(
+            label=f"Route {i + 1}",
+            method="update",
+            args=[{"visible": visible},
+                  {"title": f"Final Bus Routes - Route {i + 1}"}]
+        ))
+
+    fig.update_layout(
+        title="Final Bus Routes",
+        updatemenus=[dict(
+            active=0,
+            buttons=buttons,
+            x=1.1,
+            y=1
+        )],
+        xaxis_title="X Coordinate",
+        yaxis_title="Y Coordinate",
+        template="plotly_white"
+    )
+    fig.write_html("bus_routes_with_stops.html")
+    fig.show()
+
+
 if __name__ == '__main__':
-    roads, average_length = verify_data()
-    mst, hub_scores, G = make_graph(roads, average_length)
-    aug_network = optimize_transit(mst, hub_scores, G, roads)
-    final_bus_routes, cmap, edge_traces = display_data(aug_network)
-    display_bus_routes(final_bus_routes, cmap, edge_traces)
-    plot_final_routes(final_bus_routes, aug_network)
+    main()
+    # roads, average_length = verify_data()
+    # mst, hub_scores, G = make_graph(roads, average_length)
+    # aug_network = optimize_transit(mst, hub_scores, G, roads)
+    # final_bus_routes, cmap, edge_traces = display_data(aug_network)
+    # display_bus_routes(final_bus_routes, cmap, edge_traces)
+    # plot_final_routes(final_bus_routes, aug_network)
