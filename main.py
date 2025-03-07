@@ -1,6 +1,5 @@
-# %%
+#%% Import necessary libraries
 import math
-
 import geopandas as gpd
 import matplotlib.pyplot as plt
 import networkx as nx
@@ -12,26 +11,44 @@ from shapely.geometry import Point, LineString
 
 
 def verify_data():
+    """
+    Loads and processes road network data from a GeoJSON file.
+
+    - Reads the dataset and ensures it uses a projected coordinate system.
+    - Checks for the presence of the 'ADT' (Average Daily Traffic) column.
+    - Computes busyness values and normalizes them for comparison.
+    - Extracts or calculates road lengths.
+    - Computes the average road length for reference.
+    """
+    # Load road network data
     data_path = "SDOT_data.geojson"
     roads = gpd.read_file(data_path)
 
+    # Convert to projected coordinate system if necessary (for accurate distance calculations)
     if roads.crs.is_geographic:
         roads = roads.to_crs(epsg=26910)
 
+    # Ensure 'ADT' column exists, otherwise raise an error
     if 'ADT' not in roads.columns:
         raise ValueError("Dataset is missing the ADT column required for busyness.")
 
+    # Assign busyness values based on ADT
     roads['busyness'] = roads['ADT']
     roads['frequency'] = 1.0
+
+    # Normalize busyness values for comparison
     roads['busyness_norm'] = (roads['busyness'] - roads['busyness'].min()) / (
             roads['busyness'].max() - roads['busyness'].min() + 1e-6)
 
+    # Use existing road lengths or compute from geometry
     if 'Shape_Leng' in roads.columns:
         roads['length'] = roads['Shape_Leng']
     else:
         roads['length'] = roads.geometry.length
 
+    # Compute average road length for reference
     avg_length = roads['length'].mean()
+
     return roads, avg_length
 
 
@@ -54,34 +71,43 @@ def vertex_key(coord, precision=3):
 
 
 def make_graph(roads, avg_length):
+    # Create an empty graph
     G = nx.Graph()
 
+    # Build graph from road network
     for idx, row in roads.iterrows():
         geom = row.geometry
         for line in extract_lines(geom):
             start = vertex_key(line.coords[0])
             end = vertex_key(line.coords[-1])
 
+            # Edge attributes: length, busyness, and geometry
             attr = {
                 'length': line.length,
                 'busyness_norm': row['busyness_norm'],
                 'geometry': line
             }
 
+            # Add edge to graph, incrementing count if it already exists
             if G.has_edge(start, end):
                 G[start][end]['count'] = G[start][end].get('count', 1) + 1
             else:
                 G.add_edge(start, end, **attr)
 
+    # Compute hub scores for each node (sum of incident edge busyness)
     hub_scores = {}
     for node in G.nodes():
         incident = G.edges(node, data=True)
         total = sum(data.get('busyness_norm', 0) for _, _, data in incident)
         hub_scores[node] = total
 
+    # Normalize hub scores
     max_hub = max(hub_scores.values()) if hub_scores else 1.0
+    
     for node in hub_scores:
         hub_scores[node] /= (max_hub + 1e-6)
+    # Assign hub scores as node attributes
+    
     nx.set_node_attributes(G, hub_scores, 'hub_score')
     for u, v, data in G.edges(data=True):
         start_hub = hub_scores.get(u, 0)
@@ -100,21 +126,35 @@ def compute_edge_weight(edge_data, start_hub, end_hub, avg_length,
     """
     Compute a composite edge weight.
     """
+    # Extract the length of the edge
     length = edge_data['length']
+
+    # Compute mismatch penalty: penalizes roads with busyness far from 1.0
     mismatch = abs(edge_data['busyness_norm'] - 1.0)
     mismatch_penalty = lambda_m * mismatch
 
+    # Define a threshold for considering a node as a busy hub
     busy_threshold = 0.7
+
+    # Apply a convenience penalty if both endpoints are highly busy hubs
     if (start_hub > busy_threshold) and (end_hub > busy_threshold):
         convenience_penalty = lambda_c * (length / avg_length)
     else:
         convenience_penalty = 0
 
+    # Compute a bonus for edges that connect high-busyness hubs
     hub_bonus = beta * (start_hub + end_hub)
+
+    # Compute an average factor for estimating transit frequency
     avg_factor = (edge_data['busyness_norm'] + start_hub + end_hub) / 3.0
+
+    # Estimate frequency of transit service on this edge
     freq_est = base_freq + scale * avg_factor
+
+    # Compute a fare-related cost, proportional to estimated frequency
     fare_cost = gamma * freq_est
 
+    # Final weight calculation: accounts for length, penalties, bonuses, and fare cost
     weight = length * (1 + mismatch_penalty + convenience_penalty) - hub_bonus * avg_length * 0.1 + fare_cost
     return max(weight, 0.1)
 
