@@ -1,4 +1,3 @@
-#%% Import necessary libraries
 import math
 import geopandas as gpd
 import matplotlib.pyplot as plt
@@ -357,8 +356,9 @@ def optimize_transit(mst, hub_scores, G, roads):
     cbar = plt.colorbar(sm, ax=ax, pad=0.01)
     cbar.set_label("Average Wait Time (min)")
 
-    ax.set_title("Optimized Transit Network")
+    ax.set_title("MST Edges with Average Wait Time")
     ax.legend()
+    plt.savefig("heatmap_network.png")
     plt.show()
     return augmented_network
 
@@ -508,6 +508,7 @@ def display_data(augmented_network):
 
     ax.set_title("Final Bus Routes")
     ax.legend()
+    plt.savefig("final_routes.png")
     plt.show()
 
     edge_traces = []
@@ -830,3 +831,5 @@ def main():
     display_bus_routes(final_bus_routes, cmap, edge_traces)
     plot_final_routes(final_bus_routes, aug_network)
 
+if ___name___ == '___main___':
+    main()
