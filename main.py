@@ -54,10 +54,17 @@ def verify_data():
 
 def extract_lines(geom):
     """
-    Yield LineStrings from a geometry that could be a LineString or MultiLineString.
+    Extract and yield individual LineStrings from a given geometry.
+
+    This function handles both LineString and MultiLineString geometries.
+    If the input is a LineString, it yields it directly.
+    If the input is a MultiLineString, it iterates over its components and yields each LineString separately.
     """
+    # Check if the geometry is a single LineString
     if geom.geom_type == 'LineString':
         yield geom
+
+    # If it's a MultiLineString, iterate through its components
     elif geom.geom_type == 'MultiLineString':
         for line in geom.geoms:
             yield line
@@ -65,12 +72,22 @@ def extract_lines(geom):
 
 def vertex_key(coord, precision=3):
     """
-    Return a rounded coordinate tuple to use as a unique vertex key.
+    Generate a unique key for a vertex by rounding its coordinates.
+
+    This function rounds the x and y coordinates of a given point to the specified precision. It is useful for spatial indexing or reducing floating-point precision errors.
     """
     return round(coord[0], precision), round(coord[1], precision)
 
 
 def make_graph(roads, avg_length):
+    """
+    Construct a road network graph from given road geometries and compute hub scores.
+
+    This function takes a set of road geometries and constructs a graph where each road segment is represented as an edge between two nodes (start and end coordinates). It assigns attributes 
+    such as length, busyness, and geometry to each edge and computes hub scores for nodes based on incident edge busyness. The function also normalizes hub scores and assigns them as node attributes. 
+    
+    Finally, it computes edge weights using a custom function and returns the minimum spanning tree of the graph, along with hub scores and the full graph.
+    """
     # Create an empty graph
     G = nx.Graph()
 
@@ -103,11 +120,10 @@ def make_graph(roads, avg_length):
 
     # Normalize hub scores
     max_hub = max(hub_scores.values()) if hub_scores else 1.0
-    
     for node in hub_scores:
         hub_scores[node] /= (max_hub + 1e-6)
+
     # Assign hub scores as node attributes
-    
     nx.set_node_attributes(G, hub_scores, 'hub_score')
     for u, v, data in G.edges(data=True):
         start_hub = hub_scores.get(u, 0)
@@ -124,7 +140,11 @@ def compute_edge_weight(edge_data, start_hub, end_hub, avg_length,
                         lambda_m=1.0, lambda_c=1.0, beta=2.0,
                         base_freq=5, scale=10, gamma=0.2):
     """
-    Compute a composite edge weight.
+    Compute a composite weight for an edge in a transportation network.
+
+    This function calculates the weight of an edge based on multiple factors, including road length, busyness mismatch, convenience penalties for highly busy hubs, bonuses for connecting busy hubs, estimated transit frequency, and fare-related costs. 
+
+    The weight is designed to optimize routing decisions in a transportation network by considering factors that impact travel efficiency and user experience.
     """
     # Extract the length of the edge
     length = edge_data['length']
@@ -160,12 +180,20 @@ def compute_edge_weight(edge_data, start_hub, end_hub, avg_length,
 
 
 def assign_frequency(edge_data, start_hub, end_hub, base_freq=5, scale=10):
+    """
+    Estimate the transit service frequency for a given road segment.
+
+    The function calculates the expected frequency of transit services on a road segment based on its busyness and the hub scores of its endpoints. Higher busyness and hub scores lead to higher estimated frequency.
+    """
+    # Compute an average factor based on road busyness and hub scores
     avg_factor = (edge_data['busyness_norm'] + start_hub + end_hub) / 3.0
+
+    # Calculate the frequency based on the base frequency and scaled busyness
     freq = base_freq + scale * avg_factor
+
     return freq
 
 
-# %%
 def get_endpoint_coords(route, G):
     """
     Returns the coordinates of the start and end nodes of the route.
@@ -482,7 +510,6 @@ def display_data(augmented_network):
     ax.legend()
     plt.show()
 
-    # %%
     edge_traces = []
     for u, v, data in augmented_network.edges(data=True):
         geom = data.get('geometry')
@@ -569,7 +596,6 @@ def display_bus_routes(final_bus_routes, cmap, edge_traces):
     fig.show()
 
 
-# %%
 def euclidean_distance(p1, p2):
     """Compute Euclidean distance between two 2D points (tuples)."""
     return math.hypot(p1[0] - p2[0], p1[1] - p2[1])
@@ -659,7 +685,6 @@ def plot_final_routes(final_bus_routes, augmented_network):
                                                                        extra_stop_gap=500,
                                                                        merge_tolerance=20)
 
-    # %%
     stop_routes = {}
     for route_idx, stop_idxs in enumerate(route_stop_indices):
         for stop_idx in stop_idxs:
@@ -797,10 +822,11 @@ def plot_final_routes(final_bus_routes, augmented_network):
     fig.show()
 
 
-if __name__ == '__main__':
+def main():
     roads, average_length = verify_data()
     mst, hub_scores, G = make_graph(roads, average_length)
     aug_network = optimize_transit(mst, hub_scores, G, roads)
     final_bus_routes, cmap, edge_traces = display_data(aug_network)
     display_bus_routes(final_bus_routes, cmap, edge_traces)
     plot_final_routes(final_bus_routes, aug_network)
+
