@@ -196,13 +196,18 @@ def assign_frequency(edge_data, start_hub, end_hub, base_freq=5, scale=10):
 
 def get_endpoint_coords(route, G):
     """
-    Returns the coordinates of the start and end nodes of the route.
-    Assumes that nodes in G have a 'x' and 'y' attribute or are coordinate tuples.
-    """
+    Retrieve the coordinates of the start and end nodes of a route. 
 
+    This function extracts the coordinates of the first and last node in the route. It assumes that nodes in the graph either store 'x' and 'y' attributes or are
+    represented as coordinate tuples.
+    """
+    
     def get_coord(node):
+        # If the node is already a coordinate tuple, return it
         if isinstance(node, tuple) and len(node) == 2:
             return node
+
+        # Otherwise, retrieve coordinates from the graph's node attributes
         node_data = G.nodes[node]
         return node_data.get('x', 0), node_data.get('y', 0)
 
@@ -210,7 +215,12 @@ def get_endpoint_coords(route, G):
 
 
 def euclidean_dist(p1, p2):
+    """
+    Compute the Euclidean distance between two points.
+    """
+    
     return math.hypot(p1[0] - p2[0], p1[1] - p2[1])
+
 
 
 def compute_geometric_penalty(route, close_threshold=10):
@@ -223,22 +233,35 @@ def compute_geometric_penalty(route, close_threshold=10):
       - Turning penalty: measures the average absolute turning angle (in radians) at internal vertices.
         Many or erratic turns suggest that extra edges are forcing the route away from a simple shape.
     """
+    # Convert route points into NumPy arrays for vector calculations
     pts = [np.array(p) for p in route]
+
+    # Compute the openness penalty based on the distance between start and end points
     openness_penalty = 0.0
     if euclidean_dist(route[0], route[-1]) > close_threshold:
         openness_penalty = euclidean_dist(route[0], route[-1])
 
+    # Compute the turning penalty based on the average turning angle at internal vertices
     total_turn = 0.0
     count = 0
+    # Iterate through internal points to compute turning angles
     for i in range(1, len(pts) - 1):
+        # Vector from previous point to current point
         v1 = pts[i] - pts[i - 1]
+        # Vector from current point to next point
         v2 = pts[i + 1] - pts[i]
+        # Compute the product of vector norms
         norm_product = np.linalg.norm(v1) * np.linalg.norm(v2)
+        # Avoid division by zero if one of the vectors has zero length
         if norm_product == 0:
             continue
+        # Compute the turning angle using the dot product formula and clip to avoid errors
         angle = np.arccos(np.clip(np.dot(v1, v2) / norm_product, -1, 1))
+        # Accumulate absolute turning angles
         total_turn += abs(angle)
         count += 1
+
+    # Compute the average turning penalty, avoiding division by zero
     turning_penalty = (total_turn / count) if count > 0 else 0.0
 
     return openness_penalty + turning_penalty
@@ -266,21 +289,27 @@ def merge_two_routes_improved(route1, route2, G, forbidden_penalty=100.0,
       - best_merge: the merged route (list of nodes) if a merge is found.
       - best_total_cost: the total cost for the merge.
     """
+    # Initialize best merge variables
     best_total_cost = math.inf
     best_merge = None
 
+    # Define custom weight function for pathfinding
     def custom_weight(u, v, d):
+        # Base weight is the edge lengt
         base = d.get('length', 0)
+        # Apply penalty for forbidden edges
         if d.get('forbidden', False):
             base += forbidden_penalty
         return base
 
+    # Compute total Euclidean distance of a given route
     def compute_route_length(route):
         total = 0.0
         for i in range(len(route) - 1):
             total += euclidean_dist(route[i], route[i + 1])
         return total
 
+     # Generate possible merging orientations
     options = [
         (route1, route2, route1[-1], route2[0]),
         (route1, list(reversed(route2)), route1[-1], list(reversed(route2))[0]),
@@ -288,19 +317,25 @@ def merge_two_routes_improved(route1, route2, G, forbidden_penalty=100.0,
         (list(reversed(route1)), list(reversed(route2)), list(reversed(route1))[-1], list(reversed(route2))[0])
     ]
 
+    # Iterate through merging options
     for r1, r2, u, v in options:
         try:
+            # Find shortest path between endpoints using the custom weight function
             path = nx.shortest_path(G, source=u, target=v, weight=custom_weight)
             spath_cost = nx.shortest_path_length(G, source=u, target=v, weight=custom_weight)
+        # Skip if no valid path exists
         except (nx.NetworkXNoPath, nx.NodeNotFound):
             continue
-
+        
+        # Create the merged route and compute route length and geometric penalty
         merged_route = r1 + path[1:] + r2
         route_length = compute_route_length(merged_route)
         geom_pen = compute_geometric_penalty(merged_route)
 
+        # Compute total cost considering shortest path, length, and geometric deviation
         total_cost = spath_cost + merge_length_factor * route_length + geometric_factor * geom_pen
 
+        # Update the best merge if a lower cost is found
         if total_cost < best_total_cost:
             best_total_cost = total_cost
             best_merge = merged_route
@@ -308,6 +343,10 @@ def merge_two_routes_improved(route1, route2, G, forbidden_penalty=100.0,
     return best_merge, best_total_cost
 
 def optimize_transit(mst, hub_scores, G, roads):
+    """
+    Enhance the transit network by refining service frequency and incorporating redundant edges.
+    """
+    # Assign service frequency and average wait time to MST edges
     for u, v, data in mst.edges(data=True):
         start_hub = hub_scores.get(u, 0)
         end_hub = hub_scores.get(v, 0)
@@ -315,14 +354,17 @@ def optimize_transit(mst, hub_scores, G, roads):
         data['service_frequency'] = freq
         data['avg_wait_time'] = 60.0 / freq
 
+    # Identify redundant edges that can be added back to improve connectivity
     redundancy_threshold = 0.9
     redundant_edges = []
     for u, v, data in G.edges(data=True):
+        # Ignore edges already in the MST
         if mst.has_edge(u, v):
             continue
         if hub_scores.get(u, 0) > redundancy_threshold and hub_scores.get(v, 0) > redundancy_threshold:
             redundant_edges.append((u, v, data))
 
+    # Create an augmented network by adding selected redundant edges to the MST
     augmented_network = mst.copy()
     for u, v, data in redundant_edges:
         start_hub = hub_scores.get(u, 0)
@@ -332,6 +374,7 @@ def optimize_transit(mst, hub_scores, G, roads):
         data['avg_wait_time'] = 60.0 / freq
         augmented_network.add_edge(u, v, **data)
 
+     # Prepare data for visualization
     aug_edges = []
     wait_times = []
     for u, v, data in augmented_network.edges(data=True):
@@ -341,17 +384,22 @@ def optimize_transit(mst, hub_scores, G, roads):
         aug_edges.append(geom)
         wait_times.append(data.get('avg_wait_time', 60))
 
+     # Convert edges into a GeoDataFrame
     aug_gdf = gpd.GeoDataFrame(geometry=aug_edges, crs=roads.crs)
 
+    # Normalize wait times for color mapping
     norm = Normalize(vmin=min(wait_times), vmax=max(wait_times))
     cmap = cm.get_cmap('coolwarm')
 
+    # Plot the optimized transit network
     fig, ax = plt.subplots(figsize=(12, 12))
     roads.plot(ax=ax, color="black", linewidth=1, label="Original Road Network")
 
+    # Color edges based on wait times
     for geom, wt in zip(aug_edges, wait_times):
         ax.plot(*geom.xy, color=cmap(norm(wt)), linewidth=1.2)
 
+    # Add colorbar
     sm = cm.ScalarMappable(cmap=cmap, norm=norm)
     sm.set_array([])
     cbar = plt.colorbar(sm, ax=ax, pad=0.01)
@@ -369,24 +417,32 @@ def reduce_route_count(routes, G, target_count=600, dist_threshold=110, max_iter
     Uses additional penalties to favor merging smaller routes and routes that can be interpreted
     as simple geometric figures.
     """
+    # Create a copy of the routes list to avoid modifying the original data
     routes = routes.copy()
     iteration = 0
+
+    # Continue merging until the target count is reached or max iterations are exceeded
     while len(routes) > target_count and iteration < max_iterations:
         best_total_cost = math.inf
         best_pair = None
         best_merged = None
 
+        # Precompute endpoint coordinates for all routes
         endpoints = [get_endpoint_coords(route, G) for route in routes]
 
+        # Iterate through all pairs of routes to find the best merge
         for i in range(len(routes)):
             start_i, end_i = endpoints[i]
             for j in range(i + 1, len(routes)):
                 start_j, end_j = endpoints[j]
+
+                # Check if the routes are close enough to be merged
                 if (euclidean_dist(end_i, start_j) < dist_threshold or
                         euclidean_dist(end_i, end_j) < dist_threshold or
                         euclidean_dist(start_i, start_j) < dist_threshold or
                         euclidean_dist(start_i, end_j) < dist_threshold):
 
+                    # Attempt to merge the two routes and compute the cost
                     merged, cost = merge_two_routes_improved(
                         routes[i], routes[j], G,
                         forbidden_penalty=forbidden_penalty,
@@ -398,59 +454,90 @@ def reduce_route_count(routes, G, target_count=600, dist_threshold=110, max_iter
                         best_pair = (i, j)
                         best_merged = merged
 
+        # If no valid merge was found, terminate the loop
         if best_pair is None:
             break
-
+        
+        # Extract the best pair of routes to merge
         i, j = best_pair
+
+        # Create a new list of routes excluding the merged ones and adding the new merged route
         new_routes = [routes[k] for k in range(len(routes)) if k not in best_pair]
         new_routes.append(best_merged)
         routes = new_routes
+
+        # Increment iteration count and print progress
         iteration += 1
         print(f"Iteration {iteration}: Merged routes {i} and {j}; Total routes now = {len(routes)}")
     return routes
 
 
 def prepare_edge_demand(G):
+    """
+    Compute the demand for each edge in the graph based on service frequency.
+    """
+    # Initialize an empty dictionary to store edge demand values
     edge_demand = {}
+
+    # Iterate over all edges in the graph
     for u, v, data in G.edges(data=True):
+        # Retrieve the service frequency, ensuring a minimum demand of 1
         demand = max(1, int(round(data.get('service_frequency', 1))))
+        # Store edges in a sorted tuple format to avoid duplication (u, v) == (v, u)
         key = tuple(sorted((u, v)))
+        # Accumulate demand for each unique edge
         edge_demand[key] = edge_demand.get(key, 0) + demand
     return edge_demand
 
 
 def generate_bus_routes(G):
+    """
+    Generate bus routes based on edge demand, prioritizing high-demand edges first.
+    """
+    # Compute initial edge demand from the graph
     edge_demand = prepare_edge_demand(G)
     routes = []
+
+    # Continue generating routes while there are edges with demand remaining
     while any(d > 0 for d in edge_demand.values()):
+        # Select the edge with the highest remaining demand
         candidate_edge, demand_val = max(edge_demand.items(), key=lambda item: item[1])
         if demand_val <= 0:
             break
-
+        
+        # Extract the two endpoints of the selected edge and decrement its demand
         u, v = candidate_edge
         edge_demand[candidate_edge] -= 1
+
+        # Initialize a new bus route with the selected edge
         route = [u, v]
 
+        # Function to extend the route from a given endpoint
         def extend_route(endpoint, front=True):
             current = endpoint
             while True:
                 best_n = None
                 best_demand = 0
+                # Check all neighboring nodes to find the edge with the highest demand
                 for neighbor in G.neighbors(current):
                     key = tuple(sorted((current, neighbor)))
                     if edge_demand.get(key, 0) > best_demand:
                         best_demand = edge_demand[key]
                         best_n = neighbor
+                # Stop extending if no valid high-demand edge is found
                 if best_n is None or best_demand <= 0:
                     break
+                # Extend route at the front or back based on the parameter
                 if front:
                     route.insert(0, best_n)
                 else:
                     route.append(best_n)
+                # Reduce demand for the selected edge
                 key = tuple(sorted((current, best_n)))
                 edge_demand[key] -= 1
                 current = best_n
 
+        # Extend the route from both ends and add the finalized route to the list of bus routes
         extend_route(route[0], front=True)
         extend_route(route[-1], front=False)
         routes.append(route)
@@ -829,4 +916,3 @@ def main():
     final_bus_routes, cmap, edge_traces = display_data(aug_network)
     display_bus_routes(final_bus_routes, cmap, edge_traces)
     plot_final_routes(final_bus_routes, aug_network)
-
