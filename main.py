@@ -213,12 +213,10 @@ def get_endpoint_coords(route, G):
     return get_coord(route[0]), get_coord(route[-1])
 
 
-def euclidean_dist(p1, p2):
-    """
-    Compute the Euclidean distance between two points.
-    """
-    
+def euclidean_distance(p1, p2):
+    """Compute Euclidean distance between two 2D points (tuples)."""
     return math.hypot(p1[0] - p2[0], p1[1] - p2[1])
+
 
 
 
@@ -237,8 +235,8 @@ def compute_geometric_penalty(route, close_threshold=10):
 
     # Compute the openness penalty based on the distance between start and end points
     openness_penalty = 0.0
-    if euclidean_dist(route[0], route[-1]) > close_threshold:
-        openness_penalty = euclidean_dist(route[0], route[-1])
+    if euclidean_distance(route[0], route[-1]) > close_threshold:
+        openness_penalty = euclidean_distance(route[0], route[-1])
 
     # Compute the turning penalty based on the average turning angle at internal vertices
     total_turn = 0.0
@@ -305,7 +303,7 @@ def merge_two_routes_improved(route1, route2, G, forbidden_penalty=100.0,
     def compute_route_length(route):
         total = 0.0
         for i in range(len(route) - 1):
-            total += euclidean_dist(route[i], route[i + 1])
+            total += euclidean_distance(route[i], route[i + 1])
         return total
 
      # Generate possible merging orientations
@@ -437,10 +435,10 @@ def reduce_route_count(routes, G, target_count=600, dist_threshold=110, max_iter
                 start_j, end_j = endpoints[j]
 
                 # Check if the routes are close enough to be merged
-                if (euclidean_dist(end_i, start_j) < dist_threshold or
-                        euclidean_dist(end_i, end_j) < dist_threshold or
-                        euclidean_dist(start_i, start_j) < dist_threshold or
-                        euclidean_dist(start_i, end_j) < dist_threshold):
+                if (euclidean_distance(end_i, start_j) < dist_threshold or
+                        euclidean_distance(end_i, end_j) < dist_threshold or
+                        euclidean_distance(start_i, start_j) < dist_threshold or
+                        euclidean_distance(start_i, end_j) < dist_threshold):
 
                     # Attempt to merge the two routes and compute the cost
                     merged, cost = merge_two_routes_improved(
@@ -682,12 +680,6 @@ def display_bus_routes(final_bus_routes, cmap, edge_traces):
 
     fig.write_html("bus_routes.html")
     fig.show()
-
-
-def euclidean_distance(p1, p2):
-    """Compute Euclidean distance between two 2D points (tuples)."""
-    return math.hypot(p1[0] - p2[0], p1[1] - p2[1])
-
 
 def generate_global_stop_candidates(routes, extra_stop_gap=500, merge_tolerance=20):
     """
