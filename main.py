@@ -702,17 +702,21 @@ def generate_global_stop_candidates(routes, extra_stop_gap=500, merge_tolerance=
       route_stop_indices: a list (one per route) of indices into global_stops indicating
                           which stops are used by that route.
     """
+    # Count how many routes pass through each node
     node_frequency = {}
     for route in routes:
         for pt in route:
             node_frequency[pt] = node_frequency.get(pt, 0) + 1
 
     route_stops = []
+
+    # Determine stop locations along each route
     for route in routes:
         if not route:
             route_stops.append([])
             continue
 
+        # Identify mandatory stops at route start, end, and intersections
         mandatory_idx = [0]
         for i, pt in enumerate(route[1:-1], start=1):
             if node_frequency.get(pt, 0) > 1:
@@ -721,6 +725,8 @@ def generate_global_stop_candidates(routes, extra_stop_gap=500, merge_tolerance=
         mandatory_idx = sorted(set(mandatory_idx))
 
         stops = []
+
+        # Insert additional stops if gaps between mandatory stops are too large
         for i in range(len(mandatory_idx) - 1):
             start_idx = mandatory_idx[i]
             end_idx = mandatory_idx[i + 1]
@@ -735,11 +741,15 @@ def generate_global_stop_candidates(routes, extra_stop_gap=500, merge_tolerance=
                     new_stop = (start_pt[0] + frac * (end_pt[0] - start_pt[0]),
                                 start_pt[1] + frac * (end_pt[1] - start_pt[1]))
                     stops.append(new_stop)
+        
+        # Ensure the last mandatory stop is included
         stops.append(route[mandatory_idx[-1]])
         route_stops.append(stops)
 
     global_stops = []
     route_stop_indices = []
+
+    # Merge stops that are within the merge_tolerance
     for stops in route_stops:
         current_indices = []
         for pt in stops:
@@ -747,6 +757,7 @@ def generate_global_stop_candidates(routes, extra_stop_gap=500, merge_tolerance=
             for idx, gst in enumerate(global_stops):
                 if euclidean_distance(pt, gst) < merge_tolerance:
                     found_idx = idx
+                    # Average the stop positions to merge them
                     new_x = (gst[0] + pt[0]) / 2
                     new_y = (gst[1] + pt[1]) / 2
                     global_stops[idx] = (new_x, new_y)
