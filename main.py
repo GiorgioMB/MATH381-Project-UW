@@ -7,17 +7,13 @@ import plotly.graph_objects as go
 from matplotlib import cm
 from matplotlib.colors import Normalize
 from shapely.geometry import Point, LineString
+from typing import Tuple, List, Dict, Any, Union
 
-
-def verify_data():
+def verify_data() -> Tuple[gpd.GeoDataFrame, float]:
     """
-    Loads and processes road network data from a GeoJSON file.
-
-    - Reads the dataset and ensures it uses a projected coordinate system.
-    - Checks for the presence of the 'ADT' (Average Daily Traffic) column.
-    - Computes busyness values and normalizes them for comparison.
-    - Extracts or calculates road lengths.
-    - Computes the average road length for reference.
+    Description:
+    Reads the dataset and ensures it uses a projected coordinate system, checks for the presence of the 'ADT' (Average Daily Traffic) column,
+    computes busyness values and normalizes them for comparison, and calculates road lengths, computing the average road length for reference.
     """
     # Load road network data
     data_path = "SDOT_data.geojson"
@@ -51,13 +47,17 @@ def verify_data():
     return roads, avg_length
 
 
-def extract_lines(geom):
-    """
-    Extract and yield individual LineStrings from a given geometry.
 
-    This function handles both LineString and MultiLineString geometries.
-    If the input is a LineString, it yields it directly.
-    If the input is a MultiLineString, it iterates over its components and yields each LineString separately.
+def extract_lines(geom: LineString) -> List[LineString]:
+    """
+    Input:
+    - geom: a LineString or MultiLineString geometry object.
+
+    Output:
+    - Individual LineString components from the input geometry.
+
+    Description:
+    Extract and yield individual LineStrings from a given geometry.
     """
     # Check if the geometry is a single LineString
     if geom.geom_type == 'LineString':
@@ -69,23 +69,89 @@ def extract_lines(geom):
             yield line
 
 
-def vertex_key(coord, precision=3):
-    """
-    Generate a unique key for a vertex by rounding its coordinates.
 
-    This function rounds the x and y coordinates of a given point to the specified precision. It is useful for spatial indexing or reducing floating-point precision errors.
+def vertex_key(coord: Tuple[float, float], precision=3) -> Tuple[float, float]:
+    """
+    Generate a unique key for a vertex by rounding its coordinates to remove floating-point precision errors.
     """
     return round(coord[0], precision), round(coord[1], precision)
 
 
-def make_graph(roads, avg_length):
-    """
-    Construct a road network graph from given road geometries and compute hub scores.
 
-    This function takes a set of road geometries and constructs a graph where each road segment is represented as an edge between two nodes (start and end coordinates). It assigns attributes 
-    such as length, busyness, and geometry to each edge and computes hub scores for nodes based on incident edge busyness. The function also normalizes hub scores and assigns them as node attributes. 
-    
-    Finally, it computes edge weights using a custom function and returns the minimum spanning tree of the graph, along with hub scores and the full graph.
+def compute_edge_weight(edge_data: Dict[str, Any], start_hub: float, 
+                        end_hub: float, avg_length: float,
+                        lambda_m: float =1.0, lambda_c: float = 1.0, beta: float = 2.0,
+                        base_freq: int = 5, scale: int = 10, gamma: float = 0.2) -> float:
+    """
+    Input:
+    - edge_data: a dictionary containing edge attributes (length, busyness_norm).
+    - start_hub: the hub score of the starting node.
+    - end_hub: the hub score of the ending node.
+    - avg_length: the average road length in the dataset.
+    - lambda_m: the mismatch penalty weight.
+    - lambda_c: the convenience penalty weight.
+    - beta: the hub bonus weight.
+    - base_freq: the base frequency of transit service.
+    - scale: the scaling factor for frequency estimation.
+    - gamma: the fare-related cost weight.
+
+    Output:
+    - The computed edge weight based on multiple factors.
+
+    Description:
+    Compute the weight of an edge based on its length, busyness, hub scores of endpoints, penalising
+    mismatched busyness, applying a convenience penalty for busy hubs, providing a bonus for connecting
+    high-busyness hubs, estimating transit frequency, and calculating a fare-related cost.
+    """
+    # Extract the length of the edge
+    length = edge_data['length']
+
+    # Compute mismatch penalty: penalizes roads with busyness far from 1.0
+    mismatch = abs(edge_data['busyness_norm'] - 1.0)
+    mismatch_penalty = lambda_m * mismatch
+
+    # Define a threshold for considering a node as a busy hub
+    busy_threshold = 0.7
+
+    # Apply a convenience penalty if both endpoints are highly busy hubs
+    if (start_hub > busy_threshold) and (end_hub > busy_threshold):
+        convenience_penalty = lambda_c * (length / avg_length)
+    else:
+        convenience_penalty = 0
+
+    # Compute a bonus for edges that connect high-busyness hubs
+    hub_bonus = beta * (start_hub + end_hub)
+
+    # Compute an average factor for estimating transit frequency
+    avg_factor = (edge_data['busyness_norm'] + start_hub + end_hub) / 3.0
+
+    # Estimate frequency of transit service on this edge
+    freq_est = base_freq + scale * avg_factor
+
+    # Compute a fare-related cost, proportional to estimated frequency
+    fare_cost = gamma * freq_est
+
+    # Final weight calculation: accounts for length, penalties, bonuses, and fare cost
+    weight = length * (1 + mismatch_penalty + convenience_penalty) - hub_bonus * avg_length * 0.1 + fare_cost
+    return max(weight, 0.1)
+
+
+
+def make_graph(roads: gpd.GeoDataFrame, avg_length:float) -> Tuple[nx.Graph, Dict[Any, float], nx.Graph]:
+    """
+    Input:
+    - roads: a GeoDataFrame containing road network data.
+    - avg_length: the average road length in the dataset.
+
+    Output:
+    - mst: the minimum spanning tree of the road network graph.
+    - hub_scores: a dictionary of hub scores for each node in the graph.
+    - G: the full road network graph.
+
+    Description:
+    Constructs a graph from the road network data, computes hub scores for each node based on incident edge busyness,
+    normalizes hub scores, assigns hub scores as node attributes, computes edge weights based on multiple factors,
+    and calculates the minimum spanning tree of the graph.
     """
     # Create an empty graph
     G = nx.Graph()
@@ -135,54 +201,23 @@ def make_graph(roads, avg_length):
     return mst, hub_scores, G
 
 
-def compute_edge_weight(edge_data, start_hub, end_hub, avg_length,
-                        lambda_m=1.0, lambda_c=1.0, beta=2.0,
-                        base_freq=5, scale=10, gamma=0.2):
+
+def assign_frequency(edge_data: Dict[str, Any], start_hub: float, 
+                     end_hub: float, base_freq: int = 5, scale: int = 10) -> float:
     """
-    Compute a composite weight for an edge in a transportation network.
+    Input:
+    - edge_data: a dictionary containing edge attributes (busyness_norm).
+    - start_hub: the hub score of the starting node.
+    - end_hub: the hub score of the ending node.
+    - base_freq: the base frequency of transit service.
+    - scale: the scaling factor for frequency estimation.
+    
+    Output:
+    - The computed frequency of transit service on the edge.
 
-    This function calculates the weight of an edge based on multiple factors, including road length, busyness mismatch, convenience penalties for highly busy hubs, bonuses for connecting busy hubs, estimated transit frequency, and fare-related costs. 
-
-    The weight is designed to optimize routing decisions in a transportation network by considering factors that impact travel efficiency and user experience.
-    """
-    # Extract the length of the edge
-    length = edge_data['length']
-
-    # Compute mismatch penalty: penalizes roads with busyness far from 1.0
-    mismatch = abs(edge_data['busyness_norm'] - 1.0)
-    mismatch_penalty = lambda_m * mismatch
-
-    # Define a threshold for considering a node as a busy hub
-    busy_threshold = 0.7
-
-    # Apply a convenience penalty if both endpoints are highly busy hubs
-    if (start_hub > busy_threshold) and (end_hub > busy_threshold):
-        convenience_penalty = lambda_c * (length / avg_length)
-    else:
-        convenience_penalty = 0
-
-    # Compute a bonus for edges that connect high-busyness hubs
-    hub_bonus = beta * (start_hub + end_hub)
-
-    # Compute an average factor for estimating transit frequency
-    avg_factor = (edge_data['busyness_norm'] + start_hub + end_hub) / 3.0
-
-    # Estimate frequency of transit service on this edge
-    freq_est = base_freq + scale * avg_factor
-
-    # Compute a fare-related cost, proportional to estimated frequency
-    fare_cost = gamma * freq_est
-
-    # Final weight calculation: accounts for length, penalties, bonuses, and fare cost
-    weight = length * (1 + mismatch_penalty + convenience_penalty) - hub_bonus * avg_length * 0.1 + fare_cost
-    return max(weight, 0.1)
-
-
-def assign_frequency(edge_data, start_hub, end_hub, base_freq=5, scale=10):
-    """
-    Estimate the transit service frequency for a given road segment.
-
-    The function calculates the expected frequency of transit services on a road segment based on its busyness and the hub scores of its endpoints. Higher busyness and hub scores lead to higher estimated frequency.
+    Description:
+    Computes the frequency of transit service on an edge based on busyness, hub scores of endpoints, base frequency,
+    and a scaling factor.                                                                                                                                                                                                                                                   
     """
     # Compute an average factor based on road busyness and hub scores
     avg_factor = (edge_data['busyness_norm'] + start_hub + end_hub) / 3.0
@@ -193,15 +228,25 @@ def assign_frequency(edge_data, start_hub, end_hub, base_freq=5, scale=10):
     return freq
 
 
-def get_endpoint_coords(route, G):
-    """
-    Retrieve the coordinates of the start and end nodes of a route. 
 
-    This function extracts the coordinates of the first and last node in the route. It assumes that nodes in the graph either store 'x' and 'y' attributes or are
-    represented as coordinate tuples.
+def get_endpoint_coords(route: List[Any], G: nx.Graph) -> Tuple[Tuple[float, float], Tuple[float, float]]:
+    """
+    Input:
+    - route: a list of nodes (as coordinate tuples or nodes with 'x','y').
+    - G: a networkx graph with node attributes.
+
+    Output:
+    - The coordinates of the start and end points of the route.
+
+    Description:
+    Retrieve the coordinates of the start and end points of a route from the graph's node attributes,
+    handling both coordinate tuples and nodes with 'x' and 'y' attributes.
     """
     
-    def get_coord(node):
+    def get_coord(node: Tuple[float, float]) -> Tuple[float, float]:
+        """
+        Helper function to retrieve coordinates from a node.
+        """
         # If the node is already a coordinate tuple, return it
         if isinstance(node, tuple) and len(node) == 2:
             return node
@@ -213,30 +258,39 @@ def get_endpoint_coords(route, G):
     return get_coord(route[0]), get_coord(route[-1])
 
 
-def euclidean_distance(p1, p2):
-    """Compute Euclidean distance between two 2D points (tuples)."""
+
+def euclidean_distance(p1: Tuple[float,float], p2: Tuple[float,float]) -> float:
+    """Helper function to compute a 2-dimensional Euclidean distance."""
     return math.hypot(p1[0] - p2[0], p1[1] - p2[1])
 
 
 
-
-def compute_geometric_penalty(route, close_threshold=10):
+def compute_geometric_penalty(route: List[Tuple], close_threshold:float=10) -> float:
     """
-    Compute a penalty that increases if the route deviates from forming a simple geometric figure.
-    
-    Components:
-      - Openness penalty: if the route is not closed (start and end are far apart),
-        a penalty proportional to that distance is applied.
-      - Turning penalty: measures the average absolute turning angle (in radians) at internal vertices.
-        Many or erratic turns suggest that extra edges are forcing the route away from a simple shape.
+    Inputs:
+    - route: a list of nodes (as coordinate tuples).
+    - close_threshold: the threshold distance for considering a route 'closed'.
+
+    Output:
+    - The computed geometric penalty for the route.
+
+    Description:
+    Computes a geometric penalty for a route based on the distance between its start and end points,
+    and the average turning angles at internal vertices, penalizing routes that are not closed or have erratic turning angles.
     """
     # Convert route points into NumPy arrays for vector calculations
     pts = [np.array(p) for p in route]
 
     # Compute the openness penalty based on the distance between start and end points
     openness_penalty = 0.0
-    if euclidean_distance(route[0], route[-1]) > close_threshold:
-        openness_penalty = euclidean_distance(route[0], route[-1])
+    total_dist = 0
+    for i in range(len(route)-1):
+        start = route[i]
+        end = route[i+1]
+        total_dist += euclidean_distance(start, end)
+        print("Temporary print: ", total_dist, end = "\r")
+    if total_dist > close_threshold:
+        openness_penalty = total_dist - close_threshold
 
     # Compute the turning penalty based on the average turning angle at internal vertices
     total_turn = 0.0
@@ -264,27 +318,26 @@ def compute_geometric_penalty(route, close_threshold=10):
     return openness_penalty + turning_penalty
 
 
-def merge_two_routes_improved(route1, route2, G, forbidden_penalty=100.0,
-                              merge_length_factor=30, geometric_factor=1.0):
+
+def merge_two_routes_improved(route1: List[Tuple[float,float]], route2: List[Tuple[float,float]], 
+                              G: nx.Graph, forbidden_penalty: float = 100.0,
+                              merge_length_factor: int = 30, geometric_factor:float = 1.0) -> Tuple[List[Tuple[float,float]], float]:
     """
-    Attempt to merge two routes with additional penalties:
-    
-    - Penalizes merging longer routes (to favor merging smaller ones).
-    - Penalizes routes that deviate from forming a simple geometric figure.
-      This penalty increases if the route is not closed or has erratic turning angles.
-    - Applies an extra cost for traversing 'forbidden' roads (roads not in the original MST).
-    
-    Parameters:
-      - route1, route2: lists of nodes (as coordinate tuples or nodes with 'x','y').
-      - G: networkx graph with edge attributes. If an edge is not in the original MST,
-           it should have attribute 'forbidden'=True.
-      - forbidden_penalty: extra cost added for each forbidden edge in the connecting path.
-      - merge_length_factor: multiplier for the combined physical route length.
-      - geometric_factor: multiplier for the geometric (shape) penalty.
-      
-    Returns:
-      - best_merge: the merged route (list of nodes) if a merge is found.
-      - best_total_cost: the total cost for the merge.
+    Inputs:
+    - route1: a list of nodes (as coordinate tuples).
+    - route2: a list of nodes (as coordinate tuples).
+    - G: a networkx graph with edge attributes.
+    - forbidden_penalty: the penalty for using forbidden edges.
+    - merge_length_factor: the factor for merge length in the total cost.
+    - geometric_factor: the factor for geometric deviation in the total cost.
+
+    Output:
+    - The merged route with the lowest total cost.
+    - The total cost of the merged route.
+
+    Description:
+    Attempts to merge two routes by finding the shortest path between their endpoints, considering
+    forbidden edges and applying penalties for merge length and geometric deviation.
     """
     # Initialize best merge variables
     best_total_cost = math.inf
@@ -339,9 +392,24 @@ def merge_two_routes_improved(route1, route2, G, forbidden_penalty=100.0,
 
     return best_merge, best_total_cost
 
-def optimize_transit(mst, hub_scores, G, roads):
+
+
+def optimize_transit(mst: nx.Graph, hub_scores: Dict[Any, float],
+                     G: nx.Graph, roads: gpd.GeoDataFrame) -> nx.Graph:
     """
-    Enhance the transit network by refining service frequency and incorporating redundant edges.
+    Input:
+    - mst: the minimum spanning tree of the road network graph.
+    - hub_scores: a dictionary of hub scores for each node in the graph.
+    - G: the full road network graph.
+    - roads: a GeoDataFrame containing road network data.
+
+    Output:
+    - The optimized transit network with augmented edges.
+
+    Description:
+    Assigns service frequency and average wait time to MST edges based on hub scores, identifies redundant edges
+    that can be added back to improve connectivity, creates an augmented network by adding selected redundant edges
+    to the MST, and prepares data for visualization, plotting the optimized transit network with average wait times.
     """
     # Assign service frequency and average wait time to MST edges
     for u, v, data in mst.edges(data=True):
@@ -408,12 +476,27 @@ def optimize_transit(mst, hub_scores, G, roads):
     plt.show()
     return augmented_network
 
-def reduce_route_count(routes, G, target_count=600, dist_threshold=110, max_iterations=2000,
-                       forbidden_penalty=100.0, merge_length_factor=30, geometric_factor=1.0):
+
+
+def reduce_route_count(routes:List[List[Tuple[float, float]]], G: nx.Graph, target_count=300, dist_threshold=110, max_iterations=2000,
+                       forbidden_penalty=100.0, merge_length_factor=30, geometric_factor=1.0) -> List[List[Tuple[float, float]]]:
     """
-    Iteratively merge pairs of routes until the total number is less than or equal to target_count.
-    Uses additional penalties to favor merging smaller routes and routes that can be interpreted
-    as simple geometric figures.
+    Input:
+    - routes: a list of bus routes (each a list of node coordinates).
+    - G: a networkx graph with edge attributes.
+    - target_count: the desired number of routes to reduce to.
+    - dist_threshold: the distance threshold for merging routes.
+    - max_iterations: the maximum number of iterations to attempt merging.
+    - forbidden_penalty: the penalty for using forbidden edges.
+    - merge_length_factor: the factor for merge length in the total cost.
+    - geometric_factor: the factor for geometric deviation in the total cost.
+
+    Output:
+    - The reduced list of bus routes.
+
+    Description:
+    Iteratively merges routes that are close together based on a distance threshold, attempting to reduce the
+    total number of routes to a target count while applying penalties for forbidden edges, merge length, and geometric deviation.
     """
     # Create a copy of the routes list to avoid modifying the original data
     routes = routes.copy()
@@ -466,13 +549,21 @@ def reduce_route_count(routes, G, target_count=600, dist_threshold=110, max_iter
 
         # Increment iteration count and print progress
         iteration += 1
-        print(f"Iteration {iteration}: Merged routes {i} and {j}; Total routes now = {len(routes)}")
+        print(f"Iteration {iteration:3d}: Merged routes {i} and {j}; Total routes now = {len(routes)}", end='\r')
     return routes
 
 
-def prepare_edge_demand(G):
+
+def prepare_edge_demand(G: nx.Graph) -> Dict[Tuple, int]:
     """
-    Compute the demand for each edge in the graph based on service frequency.
+    Input:
+    - G: a networkx graph with edge attributes.
+
+    Output:
+    - A dictionary of edge demand values.
+
+    Description:
+    Computes the demand for each edge in the graph based on service frequency, ensuring a minimum demand of 1.
     """
     # Initialize an empty dictionary to store edge demand values
     edge_demand = {}
@@ -488,9 +579,19 @@ def prepare_edge_demand(G):
     return edge_demand
 
 
-def generate_bus_routes(G):
+
+def generate_bus_routes(G: nx.Graph) -> List[List[Any]]:
     """
-    Generate bus routes based on edge demand, prioritizing high-demand edges first.
+    Input:
+    - G: a networkx graph with edge attributes.
+
+    Output:
+    - A list of generated bus routes.
+
+    Description:
+    Generates bus routes by iteratively selecting the edge with the highest remaining demand,
+    extending the route from both ends to find the highest-demand neighboring edges, and adding
+    the finalized route to the list of bus routes.
     """
     # Compute initial edge demand from the graph
     edge_demand = prepare_edge_demand(G)
@@ -542,35 +643,23 @@ def generate_bus_routes(G):
     return routes
 
 
-def merge_routes_simple(routes):
-    merged = True
-    while merged:
-        merged = False
-        new_routes = []
-        used = [False] * len(routes)
-        for i in range(len(routes)):
-            if used[i]:
-                continue
-            merged_route = routes[i]
-            used[i] = True
-            for j in range(len(routes)):
-                if used[j]:
-                    continue
-                if merged_route[-1] == routes[j][0]:
-                    merged_route = merged_route + routes[j][1:]
-                    used[j] = True
-                    merged = True
-            new_routes.append(merged_route)
-        routes = new_routes
-    return routes
 
+def display_data(augmented_network : nx.Graph) -> Tuple[List[List[Tuple[float, float]]], cm, List[go.Scatter]]:
+    """
+    Input:
+    - augmented_network: a networkx graph representing the augmented road network.
 
-def display_data(augmented_network):
+    Output:
+    - final_bus_routes: a list of final bus routes.
+    - cmap: a colormap for visualizing bus routes.
+    - edge_traces: a list of plotly traces for road edges.
+
+    Description:
+    Displays the final bus routes on a plot and in an interactive plotly figure.
+    """
+
     initial_bus_routes = generate_bus_routes(augmented_network)
     print("Initial number of routes:", len(initial_bus_routes))
-
-    initial_bus_routes = merge_routes_simple(initial_bus_routes)
-    print("Routes after simple merge:", len(initial_bus_routes))
 
     final_bus_routes = reduce_route_count(initial_bus_routes, augmented_network, target_count=600)
     final_bus_routes = reduce_route_count(final_bus_routes, augmented_network, target_count=600, dist_threshold=500)
@@ -619,12 +708,38 @@ def display_data(augmented_network):
     return final_bus_routes, cmap, edge_traces
 
 
-def rgba_to_rgb_str(rgba):
+
+def rgba_to_rgb_str(rgba: Tuple[float, float, float, float]) -> str:
+    """
+    Input:
+    - rgba: an RGBA color tuple.
+
+    Output:
+    - An RGB string for Plotly.
+
+    Description:
+    Convert an RGBA color tuple to an RGB string for Plotly.
+    """
+
     r, g, b, _ = rgba
     return f"rgb({int(r * 255)}, {int(g * 255)}, {int(b * 255)})"
 
 
-def display_bus_routes(final_bus_routes, cmap, edge_traces):
+
+def display_bus_routes(final_bus_routes: List[List[Tuple[float, float]]], cmap: cm, edge_traces: List[go.Scatter]):
+    """
+    Input:
+    - final_bus_routes: a list of final bus routes.
+    - cmap: a colormap for visualizing bus routes.
+    - edge_traces: a list of plotly traces for road edges.
+
+    Output:
+    - A Plotly figure displaying the final bus routes.
+
+    Description:
+    Displays the final bus routes in an interactive Plotly figure with buttons to toggle visibility.
+    """
+
     route_traces = []
     for idx, route in enumerate(final_bus_routes):
         pts = [Point(n) if not isinstance(n, Point) else n for n in route]
@@ -681,18 +796,23 @@ def display_bus_routes(final_bus_routes, cmap, edge_traces):
     fig.write_html("bus_routes.html")
     fig.show()
 
-def generate_global_stop_candidates(routes, extra_stop_gap=500, merge_tolerance=20):
+
+
+def generate_global_stop_candidates(routes: List[Tuple[float,float]], extra_stop_gap=500, merge_tolerance=20) -> Tuple[List[Tuple[float,float]], List[List[int]]]:
     """
-    Given a list of routes (each a list of node coordinates),
-    generate bus stop candidates that satisfy:
-      1) Routes share stops if they pass through the same intersection.
-      2) If the distance between two mandatory stops exceeds extra_stop_gap (meters), 
-         extra stops are inserted along the route.
-      3) Stops that are very near (within merge_tolerance) are merged across routes.
-    Returns:
-      global_stops: a list of global stop coordinates.
-      route_stop_indices: a list (one per route) of indices into global_stops indicating
-                          which stops are used by that route.
+    Input
+    - routes: a list of bus routes (each a list of node coordinates).
+    - extra_stop_gap: the maximum gap between stops before inserting additional stops.
+    - merge_tolerance: the maximum distance between stops to merge them.
+
+    Output
+    - global_stops: a list of global stop candidates.
+    - route_stop_indices: a list of indices mapping stops to routes.
+
+    Description
+    Generates global stop candidates by identifying mandatory stops at route start, end, and intersections,
+    inserting additional stops if gaps between mandatory stops are too large, and merging stops that are within
+    the merge tolerance distance.
     """
     # Count how many routes pass through each node
     node_frequency = {}
@@ -763,11 +883,33 @@ def generate_global_stop_candidates(routes, extra_stop_gap=500, merge_tolerance=
     return global_stops, route_stop_indices
 
 
-def to_coord(pt):
+def to_coord(pt: Union[Tuple[float, float], Point]) -> Tuple[float, float]:
+    """
+    Input:
+    - pt: a point as a tuple or a Shapely Point.
+
+    Output:
+    - A coordinate
+
+    Description:
+    Convert a point to a coordinate tuple.
+    """
     return (pt.x, pt.y) if hasattr(pt, 'x') else pt
 
 
-def plot_final_routes(final_bus_routes, augmented_network):
+def plot_final_routes(final_bus_routes: List[List[Tuple[float, float]]], augmented_network: nx.Graph) -> None:
+    """
+    Input:
+    - final_bus_routes: a list of final bus routes.
+    - augmented_network: a networkx graph representing the augmented road network.
+
+    Output:
+    - A Plotly figure displaying the final bus routes with stops.
+
+    Description:
+    Plots the final bus routes with stop locations on an interactive Plotly figure
+    with buttons to toggle visibility between routes and stops.
+    """
     routes_coords = []
     for route in final_bus_routes:
         routes_coords.append([to_coord(pt) for pt in route])
@@ -914,6 +1056,9 @@ def plot_final_routes(final_bus_routes, augmented_network):
 
 
 def main():
+    """
+    Main function to run the entire pipeline.   
+    """
     roads, average_length = verify_data()
     mst, hub_scores, G = make_graph(roads, average_length)
     aug_network = optimize_transit(mst, hub_scores, G, roads)
