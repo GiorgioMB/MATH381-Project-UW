@@ -660,8 +660,8 @@ def display_data(augmented_network : nx.Graph) -> Tuple[List[List[Tuple[float, f
     initial_bus_routes = generate_bus_routes(augmented_network)
     print("Initial number of routes:", len(initial_bus_routes))
 
-    final_bus_routes = reduce_route_count(initial_bus_routes, augmented_network, target_count=600)
-    final_bus_routes = reduce_route_count(final_bus_routes, augmented_network, target_count=600, dist_threshold=500)
+    final_bus_routes = reduce_route_count(initial_bus_routes, augmented_network, target_count=300)
+    final_bus_routes = reduce_route_count(final_bus_routes, augmented_network, target_count=300, dist_threshold=500)
     print("Final number of routes:", len(final_bus_routes))
 
     fig, ax = plt.subplots(figsize=(12, 12))
