@@ -288,7 +288,6 @@ def compute_geometric_penalty(route: List[Tuple], close_threshold:float=10) -> f
         start = route[i]
         end = route[i+1]
         total_dist += euclidean_distance(start, end)
-        print("Temporary print: ", total_dist, end = "\r")
     if total_dist > close_threshold:
         openness_penalty = total_dist - close_threshold
 
